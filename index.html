@@ -1070,12 +1070,22 @@ async function enablePush() {
   const reg = await navigator.serviceWorker.ready;
   let sub = await reg.pushManager.getSubscription();
   if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(CONFIG.VAPID_PUBLIC_KEY) });
-  await store.savePushSub(sub);
+  try { await store.savePushSub(sub); }
+  catch (e) { throw new Error('서버에 이 기기를 등록하지 못했어요: ' + (e.message || e)); }
 }
 async function disablePush() {
   const reg = await navigator.serviceWorker.getRegistration();
   const sub = reg && await reg.pushManager.getSubscription();
   if (sub) { await store.removePushSub(sub.endpoint); await sub.unsubscribe(); }
+}
+// 앱을 열 때마다: 이 기기에 알림 등록이 있으면 서버에도 다시 저장 (저장이 한 번 실패했어도 자동 복구)
+async function syncPushSub() {
+  if (DEMO || !pushSupported() || Notification.permission !== 'granted') return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) await store.savePushSub(sub);
+  } catch (e) { console.warn(e); toast('폰 알림 등록 실패: ' + (e.message || e)); }
 }
 
 /* ---------------- settings ---------------- */
@@ -1468,6 +1478,7 @@ async function start(user) {
   S.settings = await store.getSettings().catch(() => ({ summary_time: '08:30', summary_enabled: true }));
   await reload();
   store.subscribe(reloadSoon);
+  syncPushSub();
   setInterval(tick, 20000);
   setInterval(reload, 120000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) reload(); });
