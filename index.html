@@ -214,6 +214,16 @@ textarea.inp{resize:vertical;min-height:64px}
 .demo-bar{background:#FFF4D6;color:#6B4E00;font-size:12.5px;padding:6px 12px;text-align:center}
 @media (prefers-color-scheme: dark){.demo-bar{background:#3A3016;color:#F2D58A}}
 
+/* ---------- 강제 모드 ---------- */
+.force-box{border:1.5px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;transition:.15s}
+.force-box.on{border-color:var(--danger);background:var(--danger-soft)}
+.force-box.on .toggle input:checked+.sw{background:var(--danger)}
+#eRemWrap.dis .seg,#eRemWrap.dis #eRemAt{opacity:.35;pointer-events:none}
+.force-tag{color:var(--danger);font-weight:700}
+#forceFrame{position:fixed;inset:0;z-index:79;pointer-events:none;box-shadow:inset 0 0 0 10px var(--danger);animation:forcePulse 1.2s ease-in-out infinite}
+#forceFrame .ff-bar{position:absolute;top:10px;left:50%;transform:translateX(-50%);background:var(--danger);color:#fff;font-weight:700;font-size:14px;padding:7px 16px;border-radius:0 0 12px 12px;white-space:nowrap;max-width:calc(100% - 40px);overflow:hidden;text-overflow:ellipsis;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+@keyframes forcePulse{0%,100%{box-shadow:inset 0 0 0 10px rgba(229,72,77,.95),inset 0 0 60px rgba(229,72,77,.55)}50%{box-shadow:inset 0 0 0 4px rgba(229,72,77,.25),inset 0 0 0 rgba(229,72,77,0)}}
+
 /* ---------- 꾸미기: 배경 ---------- */
 #bgLayer,#bgWash{position:fixed;inset:0;z-index:-2;pointer-events:none}
 #bgWash{z-index:-1;background:var(--bg);opacity:0}
@@ -516,10 +526,21 @@ function computeRemind(t) {
   const base = parseYmd(t.due_date);
   const [h, m] = (t.due_time || '09:00').split(':').map(Number);
   base.setHours(h, m, 0, 0);
-  const mins = { at: 0, '10m': 10, '30m': 30, '1h': 60 }[p];
+  const mins = { at: 0, '10m': 10, '30m': 30, '1h': 60, force: 60 }[p];
   if (mins !== undefined) return new Date(base - mins * 60000).toISOString();
   if (p === '1d9' || p === '3d9') { const d = parseYmd(addDays(t.due_date, p === '1d9' ? -1 : -3)); d.setHours(9, 0, 0, 0); return d.toISOString(); }
   return null;
+}
+/* 강제 모드: remind_preset = 'force' → 마감 1시간 전부터 완료할 때까지 계속 알림 */
+const isForce = t => t.remind_preset === 'force';
+function deadlineOf(t) {
+  if (!t.due_date) return null;
+  const d = parseYmd(t.due_date); const [h, m] = (t.due_time || '09:00').split(':').map(Number); d.setHours(h, m, 0, 0); return d;
+}
+function leftText(d) {
+  const mins = Math.round((d - Date.now()) / 60000);
+  if (mins <= 0) { const o = -mins; return o < 60 ? `마감 ${o}분 지남` : `마감 ${Math.floor(o / 60)}시간 ${o % 60}분 지남`; }
+  return mins < 60 ? `${mins}분 남음` : `${Math.floor(mins / 60)}시간 ${mins % 60}분 남음`;
 }
 function nextDate(s, rep) {
   const d = parseYmd(s);
@@ -657,7 +678,8 @@ function taskRow(t) {
   if (cat) meta.push(`<span class="pill" style="--c:${cat.color}">${esc(cat.name)}</span>`);
   if (t.due_date && S.view !== 'calendar') meta.push(`<span class="${over ? 'over' : ''}">${relDate(t.due_date)}${t.due_time ? ' ' + fmtTime(t.due_time) : ''}</span>`);
   else if (t.due_time) meta.push(`<span class="${over ? 'over' : ''}">${ICON.clock}${fmtTime(t.due_time)}</span>`);
-  if (t.remind_at && !t.done) meta.push(`<span title="알림">${ICON.bell}${fmtDT(t.remind_at)}</span>`);
+  if (isForce(t) && !t.done) meta.push(`<span class="force-tag">🔥 강제 · ${deadlineOf(t) > Date.now() ? leftText(deadlineOf(t)) : '마감 지남'}</span>`);
+  else if (t.remind_at && !t.done) meta.push(`<span title="알림">${ICON.bell}${fmtDT(t.remind_at)}</span>`);
   if (t.repeat && t.repeat !== 'none') meta.push(`<span>${ICON.rep}${REPEAT_LABEL[t.repeat]}</span>`);
   if (t.memo) meta.push(`<span title="메모 있음">${ICON.note}</span>`);
   return `<div class="task ${t.done ? 'done' : ''} ${t.important && !t.done ? 'imp' : ''}" data-id="${t.id}">
@@ -756,7 +778,7 @@ function renderCalendar(y, m) {
     cells += `<div class="cal-day ${cls} ${dStk.length ? 'has-stk' : ''}" data-date="${ds}" ${lbl ? `title="${esc(lbl)}"` : ''}><span class="num">${d.getDate()}</span>
       ${dStk.length ? `<div class="cal-stk">${dStk.slice(0, 2).map(s => stkEl(s)).join('')}</div>` : ''}
       ${lbl ? `<div class="cal-lbl">${esc(lbl)}</div>` : ''}
-      ${list.slice(0, 3).map(t => `<div class="chip ${t.done ? 'done' : ''} ${t.important ? 'imp' : ''}" style="--c:${colorOf(t)}">${t.due_time ? t.due_time + ' ' : ''}${esc(t.title)}</div>`).join('')}
+      ${list.slice(0, 3).map(t => `<div class="chip ${t.done ? 'done' : ''} ${t.important ? 'imp' : ''}" style="--c:${colorOf(t)}">${isForce(t) && !t.done ? '🔥' : ''}${t.due_time ? t.due_time + ' ' : ''}${esc(t.title)}</div>`).join('')}
       ${list.length > 3 ? `<div class="more">+${list.length - 3}개 더</div>` : ''}
       <div class="dots">${list.slice(0, 4).map(t => `<i style="--c:${colorOf(t)};${t.done ? 'opacity:.35' : ''}"></i>`).join('')}</div></div>`;
   }
@@ -815,7 +837,11 @@ function openEditor(task, defaults = {}) {
         <div class="field"><label>날짜</label><input type="date" class="inp" id="eDate" value="${t.due_date || ''}"></div>
         <div class="field"><label>시간 (선택)</label><input type="time" class="inp" id="eTime" value="${t.due_time || ''}"></div>
       </div>
-      <div><span class="lbl">알림 ${'<span class="hint" style="font-weight:400">· 시간이 없으면 오전 9시 기준</span>'}</span>
+      <div class="force-box ${isForce(t) ? 'on' : ''}" id="eForceBox">
+        <label class="toggle"><input type="checkbox" id="eForce" ${isForce(t) ? 'checked' : ''}><span class="sw"></span><span><b>🔥 강제 모드</b> — 절대 잊으면 안 되는 일</span></label>
+        <div class="hint">마감 1시간 전부터 <b>완료할 때까지</b> PC 화면 테두리가 번쩍이고, 폰에는 10분마다 알림이 와요. '확인'이나 '나중에'로는 끌 수 없어요.</div>
+      </div>
+      <div id="eRemWrap"><span class="lbl">알림 ${'<span class="hint" style="font-weight:400">· 시간이 없으면 오전 9시 기준</span>'}</span>
         <div class="seg" id="eRem">${REMIND_OPTS.map(([v, l]) => `<button data-v="${v}" class="${t.remind_preset === v ? 'on' : ''}">${l}</button>`).join('')}</div>
         <input type="datetime-local" class="inp ${t.remind_preset === 'custom' ? '' : 'hidden'}" id="eRemAt" style="margin-top:8px" value="${t.remind_at ? toLocalInput(t.remind_at) : ''}">
         <div class="hint" id="eRemHint" style="margin-top:6px"></div>
@@ -840,22 +866,42 @@ function openEditor(task, defaults = {}) {
   ['eCat', 'eRem', 'eRep'].forEach(pickIn);
   const collect = () => {
     const r = { ...t, title: ov.querySelector('#eTitle').value.trim(), category_id: seg('eCat') || null, due_date: ov.querySelector('#eDate').value || null, due_time: ov.querySelector('#eTime').value || null, remind_preset: seg('eRem') || 'none', repeat: seg('eRep') || 'none', important: ov.querySelector('#eImp').checked, memo: ov.querySelector('#eMemo').value };
+    if (ov.querySelector('#eForce').checked) r.remind_preset = 'force';
     if (r.remind_preset === 'custom') { const v = ov.querySelector('#eRemAt').value; r.remind_at = v ? new Date(v).toISOString() : null; }
     return r;
   };
   function hint() {
     const r = collect(); const h = ov.querySelector('#eRemHint');
+    const fOn = r.remind_preset === 'force';
+    ov.querySelector('#eForceBox').classList.toggle('on', fOn);
+    ov.querySelector('#eRemWrap').classList.toggle('dis', fOn);
+    if (fOn) {
+      if (!r.due_date || !r.due_time) { h.innerHTML = '<span style="color:var(--danger);font-weight:600">강제 모드는 마감 날짜와 시간이 꼭 필요해요</span>'; return; }
+      const dl = deadlineOf(r);
+      h.innerHTML = `<span style="color:var(--danger);font-weight:600">→ ${fmtDT(computeRemind(r))}부터 완료할 때까지 계속 알려요 (마감 ${fmtDT(dl.toISOString())})</span>`;
+      return;
+    }
     if (r.remind_preset === 'none') { h.textContent = ''; return; }
     if (r.remind_preset !== 'custom' && !r.due_date) { h.innerHTML = '<span style="color:var(--danger)">날짜를 먼저 정해야 알림이 울려요</span>'; return; }
     const at = r.remind_preset === 'custom' ? r.remind_at : computeRemind(r);
     h.textContent = at ? `→ ${fmtDT(at)}에 알려드려요 (PC 팝업 + 폰 알림)` : '';
   }
   ['#eDate', '#eTime', '#eRemAt'].forEach(s => ov.querySelector(s).addEventListener('input', hint));
+  ov.querySelector('#eForce').addEventListener('change', e => {
+    if (e.target.checked) {
+      if (!ov.querySelector('#eDate').value) ov.querySelector('#eDate').value = today();
+      if (!ov.querySelector('#eTime').value) { ov.querySelector('#eTime').value = '18:00'; toast('마감 시간을 오후 6시로 넣었어요. 필요하면 바꾸세요'); }
+    } else if (t.remind_preset === 'force') {
+      ov.querySelectorAll('#eRem button').forEach(x => x.classList.toggle('on', x.dataset.v === '1h'));
+    }
+    hint();
+  });
   hint();
   ov.querySelectorAll('[data-x]').forEach(b => b.onclick = closeModal);
   const save = async () => {
     const r = collect();
     if (!r.title) { ov.querySelector('#eTitle').focus(); return; }
+    if (r.remind_preset === 'force' && (!r.due_date || !r.due_time)) { toast('강제 모드는 마감 날짜와 시간이 필요해요'); ov.querySelector(r.due_date ? '#eTime' : '#eDate').focus(); return; }
     try { await saveTask(r); closeModal(); toast(isNew ? '추가했어요' : '저장했어요'); } catch (e) { toast('저장 실패: ' + e.message); }
   };
   ov.querySelector('#eSave').onclick = save;
@@ -943,12 +989,23 @@ function maybeSummary() {
 
 /* ---------------- alerts ---------------- */
 let lastAlertKey = '';
-const dueAlerts = () => { const n = Date.now(); return S.tasks.filter(t => !t.done && t.remind_at && !t.remind_done && new Date(t.remind_at).getTime() <= n).sort((a, b) => a.remind_at.localeCompare(b.remind_at)); };
-const alertPayload = t => ({ id: t.id, title: t.title, important: !!t.important, color: colorOf(t), category: catOf(t.category_id)?.name || '', when: t.due_date ? `${relDate(t.due_date)}${t.due_time ? ' ' + fmtTime(t.due_time) : ''}` : '', over: isOver(t), memo: t.memo || '' });
+const dueAlerts = () => { const n = Date.now(); return S.tasks.filter(t => !t.done && t.remind_at && (!t.remind_done || isForce(t)) && new Date(t.remind_at).getTime() <= n).sort((a, b) => (isForce(b) - isForce(a)) || a.remind_at.localeCompare(b.remind_at)); };
+const alertPayload = t => ({ id: t.id, title: t.title, important: !!t.important, color: colorOf(t), category: catOf(t.category_id)?.name || '', when: t.due_date ? `${relDate(t.due_date)}${t.due_time ? ' ' + fmtTime(t.due_time) : ''}` : '', over: isOver(t), memo: t.memo || '', force: isForce(t), deadline: isForce(t) && deadlineOf(t) ? deadlineOf(t).toISOString() : null, left: isForce(t) && deadlineOf(t) ? leftText(deadlineOf(t)) : '' });
+
+/* 웹·폰 화면용 번쩍이는 테두리 (PC 프로그램은 모든 모니터에 따로 띄워요) */
+function renderForceFrame(forced) {
+  let f = $('#forceFrame');
+  if (!forced.length || IS_DESKTOP) { f?.remove(); return; }
+  if (!f) { f = document.createElement('div'); f.id = 'forceFrame'; document.body.appendChild(f); }
+  const a = forced[0], dl = deadlineOf(a);
+  f.innerHTML = `<div class="ff-bar">🔥 ${esc(a.title)} · ${dl ? leftText(dl) : ''}${forced.length > 1 ? ` · 외 ${forced.length - 1}개` : ''} · 완료해야 꺼져요</div>`;
+}
 
 function checkAlerts() {
-  const due = dueAlerts();
+  let due = dueAlerts();
+  renderForceFrame(due.filter(isForce));
   if (IS_DESKTOP) { window.desktop.syncAlerts(due.map(alertPayload)); return; }
+  if (Date.now() < alertHiddenUntil) due = due.filter(t => !isForce(t)); // '잠깐 가리기' 중에는 강제 항목 알림창만 숨김
   const key = due.map(t => t.id).join(',');
   document.title = due.length ? `⏰ (${due.length}) 챙김` : '챙김';
   if (key === lastAlertKey && $('#alertOv')) return;
@@ -961,14 +1018,22 @@ function checkAlerts() {
   ov.innerHTML = `<div class="alert"><div class="alert-top">${ICON.bellBig}<div><b>잊지 마세요!</b><small>${due.length}개의 알림</small></div></div>
     ${due.map(alertPayload).map(a => `<div class="alert-item" data-id="${a.id}"><div class="t">${a.important ? ICON.star : ''}<span class="dot" style="--c:${a.color}"></span>${esc(a.title)}</div>
       <div class="m">${a.category ? `<span>${esc(a.category)}</span>` : ''}${a.when ? `<span style="${a.over ? 'color:var(--danger);font-weight:600' : ''}">${a.when}</span>` : ''}${a.memo ? `<span>${esc(a.memo.slice(0, 60))}</span>` : ''}</div>
-      <div class="alert-acts"><button class="btn sm primary" data-a="done">완료</button><button class="btn sm" data-a="s10">10분 뒤</button><button class="btn sm" data-a="s60">1시간 뒤</button><button class="btn sm" data-a="tmr">내일 9시</button><button class="btn sm" data-a="ack">확인</button></div></div>`).join('')}</div>`;
+      ${a.force
+        ? `<div class="m" style="color:var(--danger);font-weight:700;margin-top:-6px">🔥 강제 모드 · ${a.left} · 완료해야 꺼져요</div><div class="alert-acts"><button class="btn sm primary" data-a="done">완료했어요</button><button class="btn sm" data-a="hide">잠깐 가리기 (5분)</button></div></div>`
+        : `<div class="alert-acts"><button class="btn sm primary" data-a="done">완료</button><button class="btn sm" data-a="s10">10분 뒤</button><button class="btn sm" data-a="s60">1시간 뒤</button><button class="btn sm" data-a="tmr">내일 9시</button><button class="btn sm" data-a="ack">확인</button></div></div>`}`).join('')}</div>`;
   ov.addEventListener('click', e => { const b = e.target.closest('[data-a]'); if (b) alertAction(b.closest('[data-id]').dataset.id, b.dataset.a); });
   document.body.appendChild(ov);
   if (isNew) chime();
 }
 
+let alertHiddenUntil = 0;
 async function alertAction(id, a) {
   const t = S.tasks.find(x => x.id === id); if (!t) return;
+  if (isForce(t) && a !== 'done') {
+    // 강제 모드는 끌 수 없어요. 알림창만 잠깐 가리고, 테두리는 계속 번쩍여요.
+    if (a === 'hide') { alertHiddenUntil = Date.now() + 5 * 60000; $('#alertOv')?.remove(); lastAlertKey = ''; toast('5분 뒤에 다시 떠요. 테두리는 완료할 때까지 계속 번쩍여요'); }
+    return;
+  }
   if (a === 'done') { if (t.repeat && t.repeat !== 'none') await toggleDone(id); else { await saveTask({ ...t, done: true, done_at: new Date().toISOString(), remind_done: true }, true); celebrate(); } toast('완료했어요'); return; }
   if (a === 'ack') { await saveTask({ ...t, remind_done: true }, true); return; }
   let at;
