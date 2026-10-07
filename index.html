@@ -338,6 +338,26 @@ img.round{border-radius:50%;object-fit:cover!important;border:2.5px solid #fff;b
   .overlay{padding:0;place-items:end stretch}
   .sum-stats{grid-template-columns:repeat(3,1fr)}
 }
+/* ---- 수강료 계산 ---- */
+.mny-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:12px}
+.mny-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.mny-days{display:flex;flex-wrap:wrap;gap:10px;font-size:14px}
+.mny-days label{display:flex;align-items:center;gap:4px;cursor:pointer}
+.mny-res{background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 25%,transparent);border-radius:var(--radius);padding:16px;margin-bottom:12px}
+.mny-big{font-size:30px;font-weight:800;letter-spacing:-.02em;color:var(--ink)}
+.mny-steps{list-style:none;margin:10px 0 0;padding:0;font-size:13.5px}
+.mny-steps li{display:flex;gap:10px;padding:6px 0;border-top:1px dashed color-mix(in srgb,var(--accent) 25%,transparent)}
+.mny-steps li b{margin-left:auto;text-align:right}
+.mny-al{border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:13.5px}
+.mny-al.red{background:var(--danger-soft);color:var(--danger)}
+.mny-al.yel{background:#FFF6E0;color:#8A5A00}
+.mny-al.blu{background:#EAF1FD;color:#2557A7}
+.mny-tbl{width:100%;border-collapse:collapse;font-size:13.5px}
+.mny-tbl td,.mny-tbl th{border-bottom:1px solid var(--line);padding:6px 4px;text-align:left}
+.mny-tbl .inp{padding:6px 8px}
+.mny-help{font-size:12.5px;color:var(--muted)}
+.mny-chk{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;font-size:14px}
+.mny-chk input,.mny-days input{width:17px;height:17px;accent-color:var(--accent);flex:none}
 </style>
 </head>
 <body>
@@ -631,6 +651,7 @@ function renderSide() {
     ${nav('calendar', ICON.cal, '달력')}
     ${nav('all', ICON.all, '전체', c.all)}
     ${nav('done', ICON.done, '완료됨')}
+    ${nav('money', '<span style="width:18px;text-align:center;flex:none">💰</span>', '수강료 계산')}
     <h4>카테고리 <button data-act="cats">관리</button></h4>
     ${S.cats.map(k => `<button class="nav-item ${S.cat === k.id ? 'on' : ''}" data-cat="${k.id}" style="--c:${k.color}"><span class="dot"></span><span>${esc(k.name)}</span><span class="cnt">${catCount(k.id) || ''}</span></button>`).join('')}
     <div class="foot">
@@ -707,6 +728,7 @@ function mobileCats() {
 }
 
 function renderMain() {
+  if (S.view === 'money') { if (!$('#moneyRoot')) renderMoney(); return; } // 입력 중인 값이 새로고침에 지워지지 않게
   const td = today();
   const open = S.tasks.filter(t => !t.done && (!S.cat || t.category_id === S.cat));
   const catTag = S.cat ? `<span class="filter-tag"><span class="dot" style="--c:${catOf(S.cat)?.color}"></span>${esc(catOf(S.cat)?.name)} <button data-act="clearcat">${ICON.x}</button></span>` : '';
@@ -809,6 +831,301 @@ function onMainClick(e) {
     S.calSel = day.dataset.date; renderMain();
     if (matchMedia('(max-width:760px)').matches) $('.day-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
+}
+
+/* ================ 수강료 계산 (환불·차감) ================
+   원칙: 학원에 유리하게, 단 법정 최소 환불액 이상
+   - 학부모가 내는 돈: 100원 단위 올림 / 학원이 돌려주는 돈: 100원 단위 버림
+   - 환불: 실제 납부액 기준, 경과 = 이번 달 1일 ~ 마지막 출석일까지 열린 수업 횟수
+   - 차감: 한 주 수업 횟수만큼 연속 결석(월수금 3회, 화목 2회)일 때만, 할인 적용 금액 기준 */
+const MONEY_DEF = {
+  sibling: 5, dueTime: '18:00', holidays: [],
+  classes: [{ name: '월수금반', price: 0, days: [1, 3, 5] }, { name: '화목반', price: 0, days: [2, 4] }],
+  steps: {
+    refund: ['학부모님께 환불 금액·기준 안내', '!카드 결제 취소 또는 계좌 환불', '!환불 완료 확인 (승인취소·입금 내역)', '원장님(부원장님) 보고', '학생관리 퇴원·수강 정보 정리'],
+    deduct: ['홈페이지에 차감 금액 올림 (또는 방문 결제 안내)', '학부모님 새 금액 결제 확인', '!기존 결제 전체취소', '!전체취소 완료 확인 (승인취소 내역)'],
+  },
+};
+let MONEY = (() => { try { const s = JSON.parse(localStorage.getItem('chg_money')) || {}; return { ...MONEY_DEF, ...s, steps: { ...MONEY_DEF.steps, ...(s.steps || {}) } }; } catch { return structuredClone(MONEY_DEF); } })();
+const saveMoney = () => { try { localStorage.setItem('chg_money', JSON.stringify(MONEY)); } catch {} };
+let moneyMode = 'refund';
+
+const won = n => (Math.round(n) || 0).toLocaleString('ko-KR') + '원';
+const won2 = n => Number(n).toLocaleString('ko-KR', { maximumFractionDigits: 2 }) + '원';
+const numv = v => { const n = Number(String(v ?? '').replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : 0; };
+const up100 = n => Math.ceil(n / 100 - 1e-9) * 100;    // 학부모가 낼 돈
+const down100 = n => Math.floor(n / 100 + 1e-9) * 100; // 학원이 돌려줄 돈
+function classDates(a, b, days) {
+  const hol = new Set(MONEY.holidays || []), out = [];
+  if (!a || !b || a > b) return out;
+  for (let s = a; s <= b; s = addDays(s, 1)) if (days.includes(parseYmd(s).getDay()) && !hol.has(s)) out.push(s);
+  return out;
+}
+const monthOf = s => { const d = parseYmd(s); return [ymd(new Date(d.getFullYear(), d.getMonth(), 1)), ymd(new Date(d.getFullYear(), d.getMonth() + 1, 0))]; };
+
+function calcRefund({ paid, total, elapsed, extra = 0 }) {
+  const o = { ok: true, warns: [], steps: [] };
+  if (!(paid > 0)) { o.ok = false; o.warns.push(['red', '실제 납부액을 넣으세요.']); return o; }
+  if (!(total > 0)) { o.ok = false; o.warns.push(['red', '이번 달 총 수업 횟수를 넣으세요.']); return o; }
+  if (elapsed < 0 || elapsed > total) { o.ok = false; o.warns.push(['red', '경과 횟수가 총 수업 횟수보다 많아요. 다시 확인하세요.']); return o; }
+  const r = elapsed / total;
+  let frac, fl;
+  if (elapsed === 0) { frac = 1; o.label = '수업 시작 전 → 전액 반환'; fl = '전액'; }
+  else if (r < 1 / 3) { frac = 2 / 3; o.label = '1/3 경과 전 → 2/3 반환'; fl = '2/3'; }
+  else if (r < 1 / 2) { frac = 1 / 2; o.label = '1/3 경과 ~ 1/2 경과 전 → 1/2 반환'; fl = '1/2'; }
+  else { frac = 0; o.label = '1/2 경과 → 반환 없음'; fl = '0'; }
+  o.ratio = `${elapsed}회 / ${total}회 = ${(r * 100).toFixed(1)}%`;
+  o.steps.push(['경과 (마지막 출석일까지)', o.ratio], ['적용 구간', o.label]);
+  const thisM = paid * frac, rest = paid * extra;
+  o.steps.push(['이번 달 반환 (실제 납부액 기준)', `${won(paid)} × ${fl} = ${won2(thisM)}`]);
+  if (extra > 0) o.steps.push([`남은 ${extra}개월 선납분`, `${won(paid)} × ${extra} = ${won(rest)}`]);
+  o.raw = thisM + rest; o.amount = down100(o.raw);
+  if (o.amount !== o.raw) o.steps.push(['100원 미만 버림', `${won2(o.raw)} → ${won(o.amount)}`]);
+  if (elapsed > 0 && (elapsed * 3 === total || elapsed * 2 === total)) o.warns.push(['yel', `경과가 정확히 ${elapsed * 3 === total ? '1/3' : '1/2'}이라 구간이 넘어갔어요(학원에 유리한 쪽). 학부모님 문의가 생기기 쉬우니 마지막 출석일을 한 번 더 확인하세요.`]);
+  return o;
+}
+
+function calcDeduct({ price, rate, start, end, days, ov = {} }) {
+  const o = { ok: true, warns: [], steps: [], months: [] };
+  if (!(price > 0)) { o.ok = false; o.warns.push(['red', '정가를 넣으세요.']); return o; }
+  if (!start || !end) { o.ok = false; o.warns.push(['red', '결석 첫날과 마지막 날을 넣으세요.']); return o; }
+  if (end < start) { o.ok = false; o.warns.push(['red', '마지막 날이 첫날보다 빨라요.']); return o; }
+  if (!days.length) { o.ok = false; o.warns.push(['red', '수업 요일을 고르세요.']); return o; }
+  const streak = classDates(start, end, days).length, need = days.length;
+  o.streak = streak; o.need = need; o.eligible = streak >= need;
+  const disc = price * (1 - rate / 100), normal = up100(disc);
+  o.normal = normal;
+  o.steps.push(['연속 결석', `${streak}회 (주 ${need}회 수업 → ${need}회 연속이면 차감)`]);
+  o.steps.push([rate ? `할인 적용 수강료 (${rate}%)` : '수강료', rate ? `${won(price)} × ${(100 - rate) / 100} = ${won2(disc)} → 결제 ${won(normal)}` : won(normal)]);
+  for (let ms = monthOf(start)[0]; ms <= end; ms = addDays(monthOf(ms)[1], 1)) {
+    const me = monthOf(ms)[1], key = ms.slice(0, 7), m = Number(ms.slice(5, 7));
+    const autoT = classDates(ms, me, days).length;
+    const autoA = classDates(start > ms ? start : ms, end < me ? end : me, days).length;
+    const T = ov[key]?.total !== undefined && ov[key].total !== '' ? numv(ov[key].total) : autoT;
+    const A = ov[key]?.absent !== undefined && ov[key].absent !== '' ? numv(ov[key].absent) : autoA;
+    if (T <= 0) { o.ok = false; o.warns.push(['red', `${m}월 수업 횟수가 0이에요.`]); continue; }
+    if (A > T) { o.ok = false; o.warns.push(['red', `${m}월 결석 횟수가 수업 횟수보다 많아요.`]); continue; }
+    const unit = disc / T, cut = unit * A, pay = up100(disc - cut);
+    o.months.push({ key, m, autoT, autoA, T, A, pay, cut: normal - pay });
+    o.steps.push([`${m}월 회당 단가`, `${won2(disc)} ÷ ${T}회 = ${won2(unit)}`]);
+    o.steps.push([`${m}월 결제 금액`, `${won2(disc)} − ${won2(unit)} × ${A}회 = ${won2(disc - cut)} → 100원 올림 ${won(pay)}`]);
+  }
+  o.amount = o.months.reduce((s, x) => s + x.cut, 0);
+  if (!o.eligible) o.warns.push(['red', `연속 결석 ${streak}회라 차감 대상이 아니에요. (주 ${need}회 수업은 ${need}회 연속 결석부터)`]);
+  if (o.months.length > 1) o.warns.push(['blu', '결석이 두 달에 걸쳐 있어서 달마다 따로 계산했어요. 다음 달 몫은 다음 달 결제 금액에서 빠져요.']);
+  return o;
+}
+
+function renderMoney() {
+  $('#main').innerHTML = `<div class="main-inner" id="moneyRoot">
+    <div class="head"><div><h1>💰 수강료 계산</h1><div class="sub">학원에 유리하게 · 낼 돈은 100원 올림, 돌려줄 돈은 100원 버림</div></div>
+      <select class="inp" id="mMode" style="width:auto;font-weight:700"><option value="refund">💸 환불</option><option value="deduct">➖ 차감</option></select></div>
+    <div id="mBody"></div>
+    <details class="mny-card" id="mSet"><summary style="cursor:pointer;font-weight:700">⚙️ 계산 설정 (반·휴원일·처리 단계)</summary><div id="mSetBody" style="margin-top:12px"></div></details>
+  </div>`;
+  $('#mMode').value = moneyMode;
+  $('#mMode').onchange = () => { moneyMode = $('#mMode').value; drawMoneyBody(); };
+  $('#mSet').addEventListener('toggle', () => { if ($('#mSet').open) drawMoneySettings(); });
+  drawMoneyBody();
+}
+const classOpts = () => `<option value="">직접 입력</option>` + MONEY.classes.map((c, i) => `<option value="${i}">${esc(c.name)}${c.price ? ` (${won(c.price)})` : ''}</option>`).join('');
+const dayBoxes = id => `<div class="mny-days" id="${id}">${[1, 2, 3, 4, 5, 6, 0].map(d => `<label><input type="checkbox" value="${d}">${WD[d]}</label>`).join('')}</div>`;
+const readDays = id => [...document.querySelectorAll(`#${id} input:checked`)].map(i => Number(i.value));
+const alerts = w => w.map(([c, t]) => `<div class="mny-al ${c}">${t}</div>`).join('');
+const stepList = s => `<ul class="mny-steps">${s.map(([a, b]) => `<li><span>${esc(a)}</span><b>${esc(b)}</b></li>`).join('')}</ul>`;
+function fillClass(selId, priceId, daysId, after) {
+  $(selId).onchange = () => { const c = MONEY.classes[$(selId).value]; if (c) { if (c.price) $(priceId).value = c.price; document.querySelectorAll(`#${daysId} input`).forEach(i => i.checked = c.days.includes(Number(i.value))); } after(); };
+}
+
+let lastCalc = null;
+function drawMoneyBody() {
+  const b = $('#mBody');
+  if (moneyMode === 'refund') {
+    b.innerHTML = `<div class="mny-card"><div class="mny-grid">
+      <div class="field"><label>학생 이름</label><input class="inp" id="rName" placeholder="홍길동"></div>
+      <div class="field"><label>반</label><select class="inp" id="rCls">${classOpts()}</select></div>
+      <div class="field"><label>정가 (월 수강료)</label><input class="inp" id="rPrice" inputmode="numeric"></div>
+      <div class="field"><label>할인</label><label class="mny-chk" style="padding:8px 0"><input type="checkbox" id="rSib"> 형제할인 ${MONEY.sibling}%</label></div>
+      <div class="field"><label>실제 납부액 <span class="mny-help">(자동 · 다르면 고치기)</span></label><input class="inp" id="rPaid" inputmode="numeric"></div>
+      <div class="field"><label>환불 요청일</label><input class="inp" type="date" id="rReq" value="${today()}"></div>
+    </div>
+    <div class="field" style="margin-top:12px"><label>수업 요일</label>${dayBoxes('rDays')}</div>
+    <div class="mny-grid" style="margin-top:12px">
+      <div class="field"><label>마지막 출석일</label><input class="inp" type="date" id="rLast"><label class="mny-chk" style="margin-top:6px;font-size:13px"><input type="checkbox" id="rNone"> 이번 달 출석 없음</label></div>
+      <div class="field"><label>이번 달 총 수업 횟수 <span class="mny-help" id="rTA"></span></label><input class="inp" type="number" min="1" id="rTotal"></div>
+      <div class="field"><label>경과 횟수 <span class="mny-help" id="rEA">(1일~마지막 출석일)</span></label><input class="inp" type="number" min="0" id="rElap"></div>
+      <div class="field"><label>이번 달 말고 더 낸 개월</label><input class="inp" type="number" min="0" id="rExtra" value="0"></div>
+    </div></div><div id="rOut"></div>`;
+    const touched = {};
+    const auto = () => {
+      const P = numv($('#rPrice').value);
+      if (P && !touched.paid) $('#rPaid').value = up100($('#rSib').checked ? P * (1 - MONEY.sibling / 100) : P);
+      const days = readDays('rDays'), req = $('#rReq').value;
+      if (days.length && req) {
+        const [ms, me] = monthOf(req);
+        const T = classDates(ms, me, days).length;
+        const last = $('#rNone').checked ? '' : $('#rLast').value;
+        const E = last ? classDates(ms, last < me ? last : me, days).length : 0;
+        $('#rTA').textContent = `(달력 ${T}회)`; $('#rEA').textContent = `(달력 ${E}회 · 1일~마지막 출석일)`;
+        if (!touched.total) $('#rTotal').value = T;
+        if (!touched.elap) $('#rElap').value = E;
+      }
+      calcR();
+    };
+    fillClass('#rCls', '#rPrice', 'rDays', () => { touched.total = touched.elap = false; auto(); });
+    ['rPrice', 'rReq', 'rLast'].forEach(id => $('#' + id).addEventListener('input', auto));
+    ['rSib', 'rNone', 'rReq', 'rLast'].forEach(id => $('#' + id).addEventListener('change', auto));
+    $('#rDays').addEventListener('change', () => { touched.total = touched.elap = false; auto(); });
+    $('#rPaid').oninput = () => { touched.paid = true; calcR(); };
+    $('#rTotal').oninput = () => { touched.total = true; calcR(); };
+    $('#rElap').oninput = () => { touched.elap = true; calcR(); };
+    ['rExtra', 'rName'].forEach(id => $('#' + id).oninput = calcR);
+    calcR();
+  } else {
+    b.innerHTML = `<div class="mny-card"><div class="mny-grid">
+      <div class="field"><label>학생 이름</label><input class="inp" id="dName" placeholder="홍길동"></div>
+      <div class="field"><label>반</label><select class="inp" id="dCls">${classOpts()}</select></div>
+      <div class="field"><label>정가 (월 수강료)</label><input class="inp" id="dPrice" inputmode="numeric"></div>
+      <div class="field"><label>할인</label><label class="mny-chk" style="padding:8px 0"><input type="checkbox" id="dSib"> 형제할인 ${MONEY.sibling}%</label></div>
+      <div class="field"><label>결석 첫날</label><input class="inp" type="date" id="dS"></div>
+      <div class="field"><label>결석 마지막 날</label><input class="inp" type="date" id="dE"></div>
+    </div>
+    <div class="field" style="margin-top:12px"><label>수업 요일</label>${dayBoxes('dDays')}</div>
+    <div id="dMonths" style="margin-top:12px"></div></div><div id="dOut"></div>`;
+    window._dov = {};
+    fillClass('#dCls', '#dPrice', 'dDays', () => { window._dov = {}; calcD(); });
+    ['dPrice', 'dName'].forEach(id => $('#' + id).oninput = calcD);
+    ['dSib', 'dS', 'dE'].forEach(id => $('#' + id).addEventListener('change', () => { if (id !== 'dSib') window._dov = {}; calcD(); }));
+    $('#dDays').addEventListener('change', () => { window._dov = {}; calcD(); });
+    calcD();
+  }
+}
+
+function calcR() {
+  const inp = { paid: numv($('#rPaid').value), total: numv($('#rTotal').value), elapsed: numv($('#rElap').value), extra: numv($('#rExtra').value) };
+  if (!inp.paid) { $('#rOut').innerHTML = `<div class="mny-help">정가를 넣으면 바로 계산돼요.</div>`; lastCalc = null; return; }
+  const o = calcRefund(inp), req = $('#rReq').value, deadline = req ? addDays(req, 5) : today();
+  lastCalc = { type: 'refund', student: $('#rName').value.trim(), o, inp, deadline, last: $('#rNone').checked ? '이번 달 출석 없음' : ($('#rLast').value ? fmtShort($('#rLast').value) : '') };
+  $('#rOut').innerHTML = alerts(o.warns) + (o.ok ? `<div class="mny-res"><div class="mny-help">돌려줄 금액</div><div class="mny-big">${won(o.amount)}</div>
+    <div class="mny-help">반환 기한 <b>${fmtShort(deadline)}까지</b> (요청일부터 5일 이내)</div>${stepList(o.steps)}</div>
+    <div class="row" style="align-items:center;flex-wrap:wrap"><button class="btn primary" id="mGo">챙김에 할 일로 넣기 →</button><span class="mny-help">처리 단계가 할 일로 들어가고, ⚠️ 단계는 강제 모드로 알려요.</span></div>` : '');
+  if (o.ok) $('#mGo').onclick = startMoneyTasks;
+}
+
+function calcD() {
+  const inp = { price: numv($('#dPrice').value), rate: $('#dSib').checked ? MONEY.sibling : 0, start: $('#dS').value, end: $('#dE').value, days: readDays('dDays'), ov: window._dov };
+  if (!inp.price || !inp.start || !inp.end || !inp.days.length) { $('#dMonths').innerHTML = ''; $('#dOut').innerHTML = `<div class="mny-help">정가 · 결석 기간 · 수업 요일을 넣으면 바로 계산돼요.</div>`; lastCalc = null; return; }
+  const o = calcDeduct(inp);
+  lastCalc = { type: 'deduct', student: $('#dName').value.trim(), o, inp, deadline: addDays(today(), 1) };
+  $('#dMonths').innerHTML = o.months.length ? `<table class="mny-tbl"><tr><th>달</th><th>그 달 수업 횟수</th><th>결석 횟수</th></tr>${o.months.map(x => `<tr><td>${x.m}월</td>
+    <td><input class="inp" type="number" min="0" style="width:80px" data-k="${x.key}" data-f="total" value="${x.T}"> <span class="mny-help">달력 ${x.autoT}회</span></td>
+    <td><input class="inp" type="number" min="0" style="width:80px" data-k="${x.key}" data-f="absent" value="${x.A}"> <span class="mny-help">달력 ${x.autoA}회</span></td></tr>`).join('')}</table>
+    <div class="mny-help" style="margin-top:4px">휴원일은 아래 계산 설정에 넣거나, 여기 숫자를 직접 고치세요.</div>` : '';
+  $('#dMonths').querySelectorAll('input').forEach(i => i.onchange = () => { (window._dov[i.dataset.k] ||= {})[i.dataset.f] = i.value; calcD(); });
+  const first = o.months[0];
+  $('#dOut').innerHTML = alerts(o.warns) + (o.ok && first ? `<div class="mny-res" style="${o.eligible ? '' : 'opacity:.55'}"><div class="mny-help">학부모님이 새로 결제할 금액 (${first.m}월)</div><div class="mny-big">${won(first.pay)}</div>
+    <div>차감 금액 <b>${won(o.amount)}</b> <span class="mny-help">(원래 결제 ${won(o.normal)}${o.months.length > 1 ? ` · ${o.months.slice(1).map(x => `${x.m}월 결제 ${won(x.pay)}`).join(', ')}` : ''})</span></div>${stepList(o.steps)}</div>
+    <div class="row" style="align-items:center;flex-wrap:wrap"><button class="btn ${o.eligible ? 'primary' : ''}" id="mGo">${o.eligible ? '챙김에 할 일로 넣기 →' : '원장님 승인받고 예외로 넣기'}</button><span class="mny-help">'기존 결제 전체취소'는 강제 모드로 알려요.</span></div>` : '');
+  if (o.ok && first) $('#mGo').onclick = () => { if (!o.eligible && !confirm('연속 결석 기준이 안 돼서 규정상 차감 대상이 아니에요.\n원장님 승인을 받은 예외 처리가 맞나요?')) return; startMoneyTasks(); };
+}
+
+async function moneyCategory() {
+  let c = S.cats.find(x => x.name === '수강료');
+  if (c) return c.id;
+  const id = uuid();
+  await store.saveCat({ id, name: '수강료', color: '#E5484D', sort: S.cats.length });
+  S.cats = await store.listCats();
+  return id;
+}
+
+function startMoneyTasks() {
+  const L = lastCalc; if (!L) return;
+  if (!L.student) { toast('학생 이름을 넣어 주세요'); ($('#rName') || $('#dName'))?.focus(); return; }
+  const o = L.o, type = L.type, TN = type === 'refund' ? '환불' : '차감';
+  const amount = type === 'refund' ? o.amount : o.months[0].pay;
+  const tag = `[${L.student} ${TN}`;
+  const recent = S.tasks.filter(t => t.title.startsWith(tag) && (!t.due_date || t.due_date >= addDays(today(), -45)));
+  const recentKeys = [...new Set(recent.map(t => t.title.split(']')[0] + ']'))];
+  const lines = type === 'refund'
+    ? [['학생', L.student], ['돌려줄 금액', won(o.amount)], ['구간', o.label], ['경과', o.ratio], ['반환 기한', fmtShort(L.deadline)]]
+    : [['학생', L.student], ['새 결제 금액', won(amount)], ['차감 금액', won(o.amount)], ['결석', `${fmtShort(L.inp.start)} ~ ${fmtShort(L.inp.end)} · 연속 ${o.streak}회`]];
+  const steps = MONEY.steps[type].map(s => ({ key: s.startsWith('!'), t: s.replace(/^!\s*/, '') }));
+  const ov = modal(`
+    <div class="modal-h"><h2>금액 마지막 확인</h2><button class="icon-btn" data-x>${ICON.x}</button></div>
+    <div class="modal-b">
+      ${recentKeys.length ? `<div class="mny-al red"><b>⚠️ ${esc(L.student)} 학생은 최근 ${TN} 할 일이 이미 있어요.</b><br>${recentKeys.map(esc).join('<br>')}<br>같은 건을 두 번 처리하는 게 아닌지 확인하세요.</div>` : ''}
+      <table class="mny-tbl">${lines.map(([a, b]) => `<tr><td class="mny-help">${a}</td><td><b>${esc(b)}</b></td></tr>`).join('')}</table>
+      <div><span class="lbl">챙김에 넣을 처리 단계</span>
+        <table class="mny-tbl" id="mSteps">${steps.map((s, i) => `<tr><td><label class="mny-chk" style="font-size:13.5px"><input type="checkbox" data-i="${i}" checked> ${s.key ? '⚠️ ' : ''}${esc(s.t)}</label></td>
+          <td style="width:150px"><input class="inp" type="date" data-d="${i}" value="${L.deadline}"></td>
+          <td style="width:70px"><label class="mny-chk" style="font-size:12.5px" title="강제 모드"><input type="checkbox" data-f="${i}" ${s.key ? 'checked' : ''}>🔥</label></td></tr>`).join('')}</table>
+        <div class="mny-help" style="margin-top:6px">마감 ${fmtTime(MONEY.dueTime)} · 🔥는 마감 1시간 전부터 완료할 때까지 화면이 번쩍여요. 나머지는 1시간 전 알림.</div></div>
+      <div class="field"><label>메모 (선택)</label><textarea class="inp" id="mMemo" placeholder="예: 어머님 통화, 이사로 퇴원"></textarea></div>
+      <label class="mny-chk"><input type="checkbox" id="mOk"> 금액을 소리 내서 한 번 더 읽었어요</label>
+    </div>
+    <div class="modal-f"><span class="sp"></span><button class="btn" data-x>취소</button><button class="btn primary" id="mSave" disabled>챙김에 넣기</button></div>`, { width: 620 });
+  ov.querySelectorAll('[data-x]').forEach(x => x.onclick = closeModal);
+  $('#mOk').onchange = () => $('#mSave').disabled = !$('#mOk').checked;
+  $('#mSave').onclick = async () => {
+    $('#mSave').disabled = true;
+    try {
+      const cat = await moneyCategory();
+      const memo = [`업무 허브 계산 (${fmtShort(today())})`, ...lines.map(([a, b]) => `${a}: ${b}`), '', '계산 근거', ...o.steps.map(([a, b]) => `· ${a}: ${b}`), $('#mMemo').value.trim() ? `\n메모: ${$('#mMemo').value.trim()}` : ''].join('\n').trim();
+      const head = `${tag} ${won(amount)}]`;
+      let n = 0;
+      for (const [i, s] of steps.entries()) {
+        if (!ov.querySelector(`[data-i="${i}"]`).checked) continue;
+        const force = ov.querySelector(`[data-f="${i}"]`).checked;
+        await saveTask({ title: `${head} ${s.t}`, memo, category_id: cat, due_date: ov.querySelector(`[data-d="${i}"]`).value || L.deadline, due_time: MONEY.dueTime,
+          important: s.key || force, remind_preset: force ? 'force' : '1h', repeat: 'none', done: false }, true);
+        n++;
+      }
+      closeModal(); toast(`챙김에 ${n}개 할 일로 넣었어요`);
+      S.view = 'all'; S.cat = cat; render();
+    } catch (e) { console.error(e); toast('넣지 못했어요: ' + (e.message || e)); $('#mSave').disabled = false; }
+  };
+}
+
+function drawMoneySettings() {
+  const M = structuredClone(MONEY);
+  const el = $('#mSetBody');
+  const draw = () => {
+    el.innerHTML = `<div class="mny-grid">
+      <div class="field"><label>형제할인 (%)</label><input class="inp" type="number" id="sSib" value="${M.sibling}"></div>
+      <div class="field"><label>챙김 마감 시간</label><input class="inp" type="time" id="sDue" value="${M.dueTime}"></div></div>
+      <span class="lbl" style="margin-top:14px">반 (정가·요일 자동 입력)</span>
+      ${M.classes.map((c, i) => `<div class="row" style="flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <input class="inp" style="width:120px" data-c="${i}" data-k="name" value="${esc(c.name)}" placeholder="반 이름">
+        <input class="inp" style="width:110px" data-c="${i}" data-k="price" value="${c.price || ''}" placeholder="정가" inputmode="numeric">
+        <span class="mny-days">${[1, 2, 3, 4, 5, 6, 0].map(d => `<label><input type="checkbox" data-c="${i}" data-d="${d}" ${c.days.includes(d) ? 'checked' : ''}>${WD[d]}</label>`).join('')}</span>
+        <button class="btn sm danger" data-del="${i}">삭제</button></div>`).join('')}
+      <button class="btn sm" id="sAddC">+ 반 추가</button>
+      <span class="lbl" style="margin-top:14px">휴원일 <span class="mny-help">(수업 횟수에서 빠져요)</span></span>
+      <div class="row" style="align-items:center"><input class="inp" type="date" id="sHol" style="width:170px"><button class="btn sm" id="sAddH">추가</button></div>
+      <div class="mny-days" style="margin-top:6px">${M.holidays.slice().sort().map(h => `<span>${h} <a href="#" data-h="${h}" style="color:var(--danger)">✕</a></span>`).join('') || '<span class="mny-help">없음</span>'}</div>
+      <span class="lbl" style="margin-top:14px">처리 단계 <span class="mny-help">(한 줄에 하나 · 앞에 ! 붙이면 ⚠️ 강제 모드)</span></span>
+      <div class="mny-grid"><div class="field"><label>환불</label><textarea class="inp" rows="6" id="sStR">${esc(M.steps.refund.join('\n'))}</textarea></div>
+      <div class="field"><label>차감</label><textarea class="inp" rows="6" id="sStD">${esc(M.steps.deduct.join('\n'))}</textarea></div></div>
+      <div class="row" style="margin-top:12px"><button class="btn primary" id="sSave">설정 저장</button><span class="mny-help" style="align-self:center">이 기기에 저장돼요.</span></div>`;
+    el.querySelectorAll('[data-k]').forEach(i => i.oninput = () => { M.classes[i.dataset.c][i.dataset.k] = i.dataset.k === 'price' ? numv(i.value) : i.value; });
+    el.querySelectorAll('[data-d]').forEach(i => i.onchange = () => { const c = M.classes[i.dataset.c], d = Number(i.dataset.d); c.days = i.checked ? [...new Set([...c.days, d])] : c.days.filter(x => x !== d); });
+    el.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { M.classes.splice(b.dataset.del, 1); keep(); draw(); });
+    el.querySelectorAll('[data-h]').forEach(a => a.onclick = e => { e.preventDefault(); M.holidays = M.holidays.filter(x => x !== a.dataset.h); keep(); draw(); });
+    $('#sAddC').onclick = () => { keep(); M.classes.push({ name: '', price: 0, days: [] }); draw(); };
+    $('#sAddH').onclick = () => { const v = $('#sHol').value; keep(); if (v && !M.holidays.includes(v)) M.holidays.push(v); draw(); };
+    $('#sSave').onclick = () => {
+      keep(); M.classes = M.classes.filter(c => c.name.trim());
+      MONEY = M; saveMoney(); toast('설정을 저장했어요'); renderMoney();
+    };
+  };
+  const keep = () => {
+    if (!$('#sSib')) return;
+    M.sibling = numv($('#sSib').value); M.dueTime = $('#sDue').value || '18:00';
+    const lines = id => $(id).value.split('\n').map(s => s.trim()).filter(Boolean);
+    if (lines('#sStR').length) M.steps.refund = lines('#sStR');
+    if (lines('#sStD').length) M.steps.deduct = lines('#sStD');
+  };
+  draw();
 }
 
 /* ---------------- modals ---------------- */
