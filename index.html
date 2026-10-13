@@ -389,10 +389,13 @@ const DEFAULT_CATS = [
 const REMIND_OPTS = [
   ['none','없음'],['at','정시'],['10m','10분 전'],['30m','30분 전'],['1h','1시간 전'],['1d9','전날 오전 9시'],['3d9','3일 전 오전 9시'],['custom','직접 지정'],
 ];
-const REPEAT_OPTS = [['none','안 함'],['daily','매일'],['weekdays','평일'],['weekly','매주'],['monthly','매월']];
+const REPEAT_OPTS = [['none','안 함'],['daily','매일'],['weekdays','평일'],['weekly','매주'],['monthly','매월'],['days','요일 선택']];
 const REPEAT_LABEL = Object.fromEntries(REPEAT_OPTS);
+// 요일 반복은 'days:1,3,5' 형태로 저장 (0=일 … 6=토). 서버·DB 변경 없이 기존 repeat 칸에 그대로 들어가요.
+const repDays = r => (r || '').startsWith('days:') ? r.slice(5).split(',').filter(Boolean).map(Number) : [];
+const repeatLabel = r => repDays(r).length ? repDays(r).map(i => '일월화수목금토'[i]).join('·') : (REPEAT_LABEL[r] || '');
 
-const APP_VERSION = '10.06-진단';
+const APP_VERSION = '10.13-요일반복';
 const IS_DESKTOP = !!window.desktop;
 const DEMO = !CONFIG.SUPABASE_URL || CONFIG.SUPABASE_URL.includes('YOUR-') || !CONFIG.SUPABASE_ANON_KEY || CONFIG.SUPABASE_ANON_KEY.includes('YOUR-') || !window.supabase;
 
@@ -569,6 +572,7 @@ function nextDate(s, rep) {
   else if (rep === 'weekdays') { do d.setDate(d.getDate() + 1); while (d.getDay() === 0 || d.getDay() === 6); }
   else if (rep === 'weekly') d.setDate(d.getDate() + 7);
   else if (rep === 'monthly') { const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + 1); const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); d.setDate(Math.min(day, last)); }
+  else if (repDays(rep).length) { const set = repDays(rep); let i = 0; do { d.setDate(d.getDate() + 1); i++; } while (!set.includes(d.getDay()) && i < 8); }
   return ymd(d);
 }
 
@@ -702,7 +706,7 @@ function taskRow(t) {
   else if (t.due_time) meta.push(`<span class="${over ? 'over' : ''}">${ICON.clock}${fmtTime(t.due_time)}</span>`);
   if (isForce(t) && !t.done) meta.push(`<span class="force-tag">🔥 강제 · ${deadlineOf(t) > Date.now() ? leftText(deadlineOf(t)) : '마감 지남'}</span>`);
   else if (t.remind_at && !t.done) meta.push(`<span title="알림">${ICON.bell}${fmtDT(t.remind_at)}</span>`);
-  if (t.repeat && t.repeat !== 'none') meta.push(`<span>${ICON.rep}${REPEAT_LABEL[t.repeat]}</span>`);
+  if (t.repeat && t.repeat !== 'none') meta.push(`<span>${ICON.rep}${repeatLabel(t.repeat)}</span>`);
   if (t.memo) meta.push(`<span title="메모 있음">${ICON.note}</span>`);
   return `<div class="task ${t.done ? 'done' : ''} ${t.important && !t.done ? 'imp' : ''}" data-id="${t.id}">
     <button class="check" style="--c:${cat?.color || '#8D8D86'}" data-act="toggle" aria-label="완료"></button>
@@ -1164,7 +1168,11 @@ function openEditor(task, defaults = {}) {
         <input type="datetime-local" class="inp ${t.remind_preset === 'custom' ? '' : 'hidden'}" id="eRemAt" style="margin-top:8px" value="${t.remind_at ? toLocalInput(t.remind_at) : ''}">
         <div class="hint" id="eRemHint" style="margin-top:6px"></div>
       </div>
-      <div><span class="lbl">반복</span><div class="seg" id="eRep">${REPEAT_OPTS.map(([v, l]) => `<button data-v="${v}" class="${t.repeat === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div><span class="lbl">반복</span><div class="seg" id="eRep">${REPEAT_OPTS.map(([v, l]) => `<button data-v="${v}" class="${(v === 'days' ? repDays(t.repeat).length > 0 : t.repeat === v) ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <div id="eDaysBox" class="${repDays(t.repeat).length ? '' : 'hidden'}" style="margin-top:8px">
+          <div class="seg" id="eDays">${[1, 2, 3, 4, 5, 6, 0].map(i => `<button data-d="${i}" class="${repDays(t.repeat).includes(i) ? 'on' : ''}" style="min-width:38px">${'일월화수목금토'[i]}</button>`).join('')}
+            <span style="width:8px"></span><button data-p="1,3,5">월수금</button><button data-p="2,4">화목</button></div>
+          <div class="hint" id="eDaysHint" style="margin-top:6px"></div></div></div>
       <label class="toggle"><input type="checkbox" id="eImp" ${t.important ? 'checked' : ''}><span class="sw"></span><span>${ICON.starO} 중요 — 목록 맨 위, 아침 요약에 강조</span></label>
       <div class="field"><label>메모</label><textarea class="inp" id="eMemo" placeholder="필요한 내용, 연락처, 링크 등">${esc(t.memo)}</textarea></div>
     </div>
@@ -1182,9 +1190,25 @@ function openEditor(task, defaults = {}) {
     hint();
   });
   ['eCat', 'eRem', 'eRep'].forEach(pickIn);
+  const daysPicked = () => [...ov.querySelectorAll('#eDays [data-d].on')].map(b => +b.dataset.d).sort((a, b) => a - b);
+  const daysHint = () => {
+    const ds = daysPicked(), el = ov.querySelector('#eDaysHint'), dd = ov.querySelector('#eDate').value;
+    if (!ds.length) { el.innerHTML = '<span style="color:var(--danger)">반복할 요일을 골라 주세요</span>'; return; }
+    el.textContent = `매주 ${ds.map(i => '일월화수목금토'[i]).join('·')} — 완료하면 ${dd ? fmtShort(nextDate(dd, 'days:' + ds.join(','))) : '다음 요일'}로 넘어가요`;
+  };
+  ov.querySelector('#eRep').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; ov.querySelector('#eDaysBox').classList.toggle('hidden', b.dataset.v !== 'days'); if (b.dataset.v === 'days') daysHint(); });
+  ov.querySelector('#eDays').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.p) { const set = b.dataset.p.split(',').map(Number); ov.querySelectorAll('#eDays [data-d]').forEach(x => x.classList.toggle('on', set.includes(+x.dataset.d))); }
+    else b.classList.toggle('on');
+    daysHint();
+  });
+  ov.querySelector('#eDate').addEventListener('input', () => { if (!ov.querySelector('#eDaysBox').classList.contains('hidden')) daysHint(); });
+  if (repDays(t.repeat).length) daysHint();
   const collect = () => {
     const r = { ...t, title: ov.querySelector('#eTitle').value.trim(), category_id: seg('eCat') || null, due_date: ov.querySelector('#eDate').value || null, due_time: ov.querySelector('#eTime').value || null, remind_preset: seg('eRem') || 'none', repeat: seg('eRep') || 'none', important: ov.querySelector('#eImp').checked, memo: ov.querySelector('#eMemo').value };
     if (ov.querySelector('#eForce').checked) r.remind_preset = 'force';
+    if (r.repeat === 'days') r.repeat = 'days:' + daysPicked().join(',');
     if (r.remind_preset === 'custom') { const v = ov.querySelector('#eRemAt').value; r.remind_at = v ? new Date(v).toISOString() : null; }
     return r;
   };
@@ -1219,6 +1243,7 @@ function openEditor(task, defaults = {}) {
   const save = async () => {
     const r = collect();
     if (!r.title) { ov.querySelector('#eTitle').focus(); return; }
+    if (r.repeat === 'days:') { toast('반복할 요일을 골라 주세요'); return; }
     if (r.remind_preset === 'force' && (!r.due_date || !r.due_time)) { toast('강제 모드는 마감 날짜와 시간이 필요해요'); ov.querySelector(r.due_date ? '#eTime' : '#eDate').focus(); return; }
     try { await saveTask(r); closeModal(); toast(isNew ? '추가했어요' : '저장했어요'); } catch (e) { toast('저장 실패: ' + e.message); }
   };
