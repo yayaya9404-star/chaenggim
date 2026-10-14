@@ -395,7 +395,7 @@ const REPEAT_LABEL = Object.fromEntries(REPEAT_OPTS);
 const repDays = r => (r || '').startsWith('days:') ? r.slice(5).split(',').filter(Boolean).map(Number) : [];
 const repeatLabel = r => repDays(r).length ? repDays(r).map(i => '일월화수목금토'[i]).join('·') : (REPEAT_LABEL[r] || '');
 
-const APP_VERSION = '10.13-요일반복';
+const APP_VERSION = '10.14-형제환불';
 const IS_DESKTOP = !!window.desktop;
 const DEMO = !CONFIG.SUPABASE_URL || CONFIG.SUPABASE_URL.includes('YOUR-') || !CONFIG.SUPABASE_ANON_KEY || CONFIG.SUPABASE_ANON_KEY.includes('YOUR-') || !window.supabase;
 
@@ -867,7 +867,7 @@ function classDates(a, b, days) {
 }
 const monthOf = s => { const d = parseYmd(s); return [ymd(new Date(d.getFullYear(), d.getMonth(), 1)), ymd(new Date(d.getFullYear(), d.getMonth() + 1, 0))]; };
 
-function calcRefund({ paid, total, elapsed, extra = 0 }) {
+function calcRefund({ paid, total, elapsed, extra = 0, base = 0 }) {
   const o = { ok: true, warns: [], steps: [] };
   if (!(paid > 0)) { o.ok = false; o.warns.push(['red', '실제 납부액을 넣으세요.']); return o; }
   if (!(total > 0)) { o.ok = false; o.warns.push(['red', '이번 달 총 수업 횟수를 넣으세요.']); return o; }
@@ -880,8 +880,9 @@ function calcRefund({ paid, total, elapsed, extra = 0 }) {
   else { frac = 0; o.label = '1/2 경과 → 반환 없음'; fl = '0'; }
   o.ratio = `${elapsed}회 / ${total}회 = ${(r * 100).toFixed(1)}%`;
   o.steps.push(['경과 (마지막 출석일까지)', o.ratio], ['적용 구간', o.label]);
-  const thisM = paid * frac, rest = paid * extra;
-  o.steps.push(['이번 달 반환 (실제 납부액 기준)', `${won(paid)} × ${fl} = ${won2(thisM)}`]);
+  const B = base > 0 ? base : paid; // base: 형제할인 받던 학생이면 정가
+  const thisM = B * frac, rest = paid * extra;
+  o.steps.push([base > 0 ? '이번 달 반환 (형제할인 빼고 정가 기준)' : '이번 달 반환 (실제 납부액 기준)', `${won(B)} × ${fl} = ${won2(thisM)}`]);
   if (extra > 0) o.steps.push([`남은 ${extra}개월 선납분`, `${won(paid)} × ${extra} = ${won(rest)}`]);
   o.raw = thisM + rest; o.amount = down100(o.raw);
   if (o.amount !== o.raw) o.steps.push(['100원 미만 버림', `${won2(o.raw)} → ${won(o.amount)}`]);
@@ -959,7 +960,14 @@ function drawMoneyBody() {
       <div class="field"><label>이번 달 총 수업 횟수 <span class="mny-help" id="rTA"></span></label><input class="inp" type="number" min="1" id="rTotal"></div>
       <div class="field"><label>경과 횟수 <span class="mny-help" id="rEA">(1일~마지막 출석일)</span></label><input class="inp" type="number" min="0" id="rElap"></div>
       <div class="field"><label>이번 달 말고 더 낸 개월</label><input class="inp" type="number" min="0" id="rExtra" value="0"></div>
-    </div></div><div id="rOut"></div>`;
+    </div>
+    <div id="rSibBox" class="hidden" style="margin-top:14px;border-top:1px dashed var(--line);padding-top:12px">
+      <div class="mny-help" style="margin-bottom:8px"><b>👫 형제할인 받던 학생이에요.</b> 환불은 형제할인 없이 <b>정가 기준</b>으로 계산하고, 남는 형제는 할인이 없어지니 <b>이번 달 할인분(${MONEY.sibling}%)을 추가로</b> 받아요.</div>
+      <div class="mny-grid">
+        <div class="field"><label>남는 형제 이름</label><input class="inp" id="rSName" placeholder="홍길순"></div>
+        <div class="field"><label>형제 반 (레벨)</label><select class="inp" id="rSCls">${classOpts()}</select></div>
+        <div class="field"><label>형제 정가 (월 수강료)</label><input class="inp" id="rSPrice" inputmode="numeric"></div>
+      </div></div></div><div id="rOut"></div>`;
     const touched = {};
     const auto = () => {
       const P = numv($('#rPrice').value);
@@ -981,6 +989,9 @@ function drawMoneyBody() {
     ['rSib', 'rNone', 'rReq', 'rLast'].forEach(id => $('#' + id).addEventListener('change', auto));
     $('#rDays').addEventListener('change', () => { touched.total = touched.elap = false; auto(); });
     $('#rPaid').oninput = () => { touched.paid = true; calcR(); };
+    $('#rSib').addEventListener('change', () => $('#rSibBox').classList.toggle('hidden', !$('#rSib').checked));
+    $('#rSCls').onchange = () => { const c = MONEY.classes[$('#rSCls').value]; if (c && c.price) $('#rSPrice').value = c.price; calcR(); };
+    ['rSName', 'rSPrice'].forEach(id => $('#' + id).oninput = calcR);
     $('#rTotal').oninput = () => { touched.total = true; calcR(); };
     $('#rElap').oninput = () => { touched.elap = true; calcR(); };
     ['rExtra', 'rName'].forEach(id => $('#' + id).oninput = calcR);
@@ -1006,12 +1017,26 @@ function drawMoneyBody() {
 }
 
 function calcR() {
-  const inp = { paid: numv($('#rPaid').value), total: numv($('#rTotal').value), elapsed: numv($('#rElap').value), extra: numv($('#rExtra').value) };
+  const isSib = $('#rSib').checked, price = numv($('#rPrice').value);
+  const inp = { paid: numv($('#rPaid').value), total: numv($('#rTotal').value), elapsed: numv($('#rElap').value), extra: numv($('#rExtra').value), base: isSib ? price : 0 };
   if (!inp.paid) { $('#rOut').innerHTML = `<div class="mny-help">정가를 넣으면 바로 계산돼요.</div>`; lastCalc = null; return; }
   const o = calcRefund(inp), req = $('#rReq').value, deadline = req ? addDays(req, 5) : today();
-  lastCalc = { type: 'refund', student: $('#rName').value.trim(), o, inp, deadline, last: $('#rNone').checked ? '이번 달 출석 없음' : ($('#rLast').value ? fmtShort($('#rLast').value) : '') };
+  // 남는 형제: 형제할인이 없어지니 이번 달 할인분 전부를 추가로 받음 (받는 돈 → 100원 올림)
+  let sib = null;
+  if (isSib) {
+    if (!(price > 0)) { o.ok = false; o.warns.push(['red', '형제할인 받던 학생은 정가 기준으로 환불해요. 정가를 넣어 주세요.']); }
+    const sP = numv($('#rSPrice').value), sName = $('#rSName').value.trim();
+    if (sP > 0) {
+      sib = { name: sName || '남는 형제', price: sP, extra: up100(sP * MONEY.sibling / 100) };
+      sib.steps = [['형제 정가', won(sP)], [`이번 달 할인분 ${MONEY.sibling}%`, `${won(sP)} × ${MONEY.sibling}% = ${won2(sP * MONEY.sibling / 100)}`]];
+      if (sib.extra !== sP * MONEY.sibling / 100) sib.steps.push(['100원 미만 올림', `→ ${won(sib.extra)}`]);
+      sib.steps.push(['다음 달부터', `정가 ${won(sP)} 청구`]);
+    } else o.warns.push(['yel', '남는 형제의 반(레벨)이나 정가를 넣으면, 추가로 받을 형제할인 해제분을 같이 계산해요.']);
+  }
+  lastCalc = { type: 'refund', student: $('#rName').value.trim(), o, inp, deadline, sib, last: $('#rNone').checked ? '이번 달 출석 없음' : ($('#rLast').value ? fmtShort($('#rLast').value) : '') };
   $('#rOut').innerHTML = alerts(o.warns) + (o.ok ? `<div class="mny-res"><div class="mny-help">돌려줄 금액</div><div class="mny-big">${won(o.amount)}</div>
     <div class="mny-help">반환 기한 <b>${fmtShort(deadline)}까지</b> (요청일부터 5일 이내)</div>${stepList(o.steps)}</div>
+    ${sib ? `<div class="mny-res"><div class="mny-help">👫 ${esc(sib.name)} — 이번 달 추가로 받을 금액 (형제할인 해제)</div><div class="mny-big">+${won(sib.extra)}</div>${stepList(sib.steps)}</div>` : ''}
     <div class="row" style="align-items:center;flex-wrap:wrap"><button class="btn primary" id="mGo">챙김에 할 일로 넣기 →</button><span class="mny-help">처리 단계가 할 일로 들어가고, ⚠️ 단계는 강제 모드로 알려요.</span></div>` : '');
   if (o.ok) $('#mGo').onclick = startMoneyTasks;
 }
@@ -1054,6 +1079,11 @@ function startMoneyTasks() {
     ? [['학생', L.student], ['돌려줄 금액', won(o.amount)], ['구간', o.label], ['경과', o.ratio], ['반환 기한', fmtShort(L.deadline)]]
     : [['학생', L.student], ['새 결제 금액', won(amount)], ['차감 금액', won(o.amount)], ['결석', `${fmtShort(L.inp.start)} ~ ${fmtShort(L.inp.end)} · 연속 ${o.streak}회`]];
   const steps = MONEY.steps[type].map(s => ({ key: s.startsWith('!'), t: s.replace(/^!\s*/, '') }));
+  if (type === 'refund' && L.sib) {
+    lines.push(['남는 형제', `${L.sib.name} · 이번 달 +${won(L.sib.extra)} 추가 결제 · 다음 달부터 ${won(L.sib.price)}`]);
+    steps.push({ key: true, t: `남는 형제 ${L.sib.name} 형제할인 해제분 ${won(L.sib.extra)} 추가 결제 받기` },
+               { key: false, t: `${L.sib.name} 다음 달부터 정가 ${won(L.sib.price)}으로 청구 변경` });
+  }
   const ov = modal(`
     <div class="modal-h"><h2>금액 마지막 확인</h2><button class="icon-btn" data-x>${ICON.x}</button></div>
     <div class="modal-b">
